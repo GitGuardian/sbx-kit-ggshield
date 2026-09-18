@@ -81,14 +81,30 @@ container image (not used by a mixin).
 `.github/workflows/publish-kit.yml` runs the same `scripts/publish.sh` on a
 runner, so CI and a laptop publish identical artifacts.
 
-**One-time setup** in the GitHub repo, under *Settings → Secrets and variables
-→ Actions*:
+**One-time setup** in the GitHub repo, all of it on a **`release` environment**
+(*Settings → Environments → release*), as secrets:
 
-| Kind     | Name                  | Value                                              |
-|----------|-----------------------|----------------------------------------------------|
-| Secret   | `DOCKERHUB_USERNAME`  | The Docker Hub account used to log in (the login, not the email). It needs push rights in the `gitguardian` org — an org owner, or a member of a team granted *Read & Write* on `gitguardian/ggshield-kit`. |
-| Secret   | `DOCKERHUB_TOKEN`     | That account's **access token**, *Read & Write* scope |
-| Variable | `DOCKERHUB_NAMESPACE` | Optional — overrides the default `gitguardian` namespace (e.g. to publish from a fork) |
+| Name                  | Value                                              |
+|-----------------------|----------------------------------------------------|
+| `DOCKERHUB_USERNAME`  | The Docker Hub account used to log in (the login, not the email). It needs push rights in the `gitguardian` org — an org owner, or a member of a team granted *Read & Write* on `gitguardian/ggshield-kit`. |
+| `DOCKERHUB_TOKEN`     | That account's **access token**, *Read & Write* scope |
+| `DOCKERHUB_NAMESPACE` | Optional — overrides the default `gitguardian` namespace (e.g. to publish from a fork) |
+
+The `publish` and `description` jobs both declare `environment: release`, which
+is what makes those secrets resolve — an environment secret is invisible to a
+job that is not bound to the environment. Any protection rule you put on the
+environment (required reviewers, a wait timer, a branch restriction) therefore
+gates the artifact push: the run pauses before `publish` starts. `validate`
+needs no credentials and stays unbound, so pull requests are unaffected.
+
+`DOCKERHUB_NAMESPACE` is read as `secrets.DOCKERHUB_NAMESPACE`, not `vars.`.
+Keeping it a secret costs one thing: Actions masks a secret's value wherever it
+appears in a log, so the namespace renders as `***` in the "Publishing to…"
+line and in the `sbx run … --kit oci://docker.io/***/ggshield-kit@sha256:…`
+command in the job summary. The digest is still there and correct — substitute
+the namespace by hand when copying it into the digest tables. Moving it to an
+Actions *variable* (and reading it with `vars.`) is what buys back readable
+logs, at the cost of it no longer living with the credentials.
 
 Create the token at *Docker Hub → Account settings → Personal access tokens*.
 A password works too, but a scoped token is revocable on its own. An

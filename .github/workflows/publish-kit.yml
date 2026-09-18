@@ -7,13 +7,17 @@ name: Publish kit
 # one repo, one tag - the kit is agent-agnostic, so there is nothing to fan out
 # over.
 #
-# Setup required once, in the GitHub repo (Settings -> Secrets and variables ->
-# Actions):
-#   secret   DOCKERHUB_USERNAME   the Docker Hub account used to log in; it must
-#                                 have push rights in the target namespace
-#   secret   DOCKERHUB_TOKEN      a Docker Hub access token with Read & Write
-#   variable DOCKERHUB_NAMESPACE  optional; overrides the default `gitguardian`
-#                                 namespace (e.g. to publish from a fork)
+# Setup required once, in the GitHub repo (Settings -> Environments -> release).
+# All three are environment SECRETS, so only the jobs that declare
+# `environment: release` below can read them:
+#   secret DOCKERHUB_USERNAME   the Docker Hub account used to log in; it must
+#                               have push rights in the target namespace
+#   secret DOCKERHUB_TOKEN      a Docker Hub access token with Read & Write
+#   secret DOCKERHUB_NAMESPACE  optional; overrides the default `gitguardian`
+#                               namespace (e.g. to publish from a fork). Being a
+#                               secret, it is masked as *** everywhere it is
+#                               echoed - including the published `sbx run`
+#                               command in the job summary.
 #
 # See PUBLISHING.md for the full story (why a release build of sbx matters, why
 # consumers pin by digest).
@@ -22,7 +26,7 @@ on:
   workflow_dispatch:
     inputs:
       namespace:
-        description: "Docker Hub namespace (default: DOCKERHUB_NAMESPACE variable, else gitguardian)"
+        description: "Docker Hub namespace (default: DOCKERHUB_NAMESPACE secret, else gitguardian)"
         type: string
         required: false
       tag:
@@ -58,7 +62,7 @@ env:
   SBX_VERSION: "0.39.0"
   KIT_REPO_NAME: ggshield-kit
   # Same default as scripts/publish.sh. Override per-repo with the
-  # DOCKERHUB_NAMESPACE variable, or per-run with the `namespace` input.
+  # DOCKERHUB_NAMESPACE secret, or per-run with the `namespace` input.
   KIT_NAMESPACE_DEFAULT: gitguardian
 
 jobs:
@@ -86,6 +90,11 @@ jobs:
     needs: validate
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    # The Docker Hub credentials live in this environment, not at repo level:
+    # `secrets.DOCKERHUB_*` below resolve only for a job bound to it. Anything
+    # configured on the environment (required reviewers, branch restrictions)
+    # therefore gates every push of the kit artifact.
+    environment: release
     permissions:
       contents: read
       # Required for keyless signing when the `sign` input is on: sbx exchanges
@@ -103,7 +112,7 @@ jobs:
         id: target
         env:
           INPUT_NAMESPACE: ${{ inputs.namespace }}
-          VAR_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          VAR_NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE }}
         run: |
           ns="${INPUT_NAMESPACE:-${VAR_NAMESPACE:-$KIT_NAMESPACE_DEFAULT}}"
           if [ -z "$ns" ]; then
@@ -167,12 +176,15 @@ jobs:
     needs: publish
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    # Same credentials, same environment - this job authenticates to the Docker
+    # Hub API with DOCKERHUB_USERNAME/TOKEN too.
+    environment: release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Push docs/dockerhub-overview.md as the repo overview
         env:
-          NAMESPACE: ${{ inputs.namespace || vars.DOCKERHUB_NAMESPACE || 'gitguardian' }}
+          NAMESPACE: ${{ inputs.namespace || secrets.DOCKERHUB_NAMESPACE || 'gitguardian' }}
           USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
