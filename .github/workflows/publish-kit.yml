@@ -135,6 +135,10 @@ jobs:
         env:
           SBX_KIT_SIGN: ${{ inputs.sign && '1' || '0' }}
         run: |
+          # Without pipefail the pipeline reports `tee`'s status, so a failing
+          # publish.sh (a rejected push, a missing signing identity) left this
+          # step green and the later digest summary empty.
+          set -o pipefail
           ./scripts/publish.sh \
             "${{ steps.target.outputs.namespace }}" \
             "${{ inputs.tag || 'latest' }}" | tee publish.log
@@ -196,13 +200,28 @@ jobs:
             echo "::error::Could not obtain a Docker Hub API token." >&2
             exit 1
           fi
-          jq -n \
+          # Use the namespace-scoped route, not the legacy
+          # /v2/repositories/<ns>/<repo>/ one: that path rejects any JWT minted
+          # from an access token ("token issued from organization access token
+          # is not allowed"), whatever scopes the token carries - only a
+          # username+password session may PATCH there. The route below accepts
+          # the same token, provided it has Read & Write on this repository.
+          code="$(jq -n \
             --rawfile body docs/dockerhub-overview.md \
             --arg short "GitGuardian (ggshield) secret scanning as a Docker Sandboxes kit" \
             '{full_description:$body, description:$short}' \
-          | curl -sf -X PATCH \
+          | curl -s -o response.json -w '%{http_code}' -X PATCH \
               -H "Authorization: Bearer $token" \
               -H 'Content-Type: application/json' \
               -d @- \
-              "https://hub.docker.com/v2/repositories/${NAMESPACE}/${KIT_REPO_NAME}/" >/dev/null
+              "https://hub.docker.com/v2/namespaces/${NAMESPACE}/repositories/${KIT_REPO_NAME}")"
+          case "$code" in
+            2*) ;;
+            *)
+              # The previous `curl -sf ... >/dev/null` discarded both status and
+              # body, leaving nothing in the log but curl's exit 22.
+              echo "::error::Docker Hub refused the overview update (HTTP $code): $(cat response.json)" >&2
+              exit 1
+              ;;
+          esac
           echo "Overview synced to docker.io/${NAMESPACE}/${KIT_REPO_NAME}"
