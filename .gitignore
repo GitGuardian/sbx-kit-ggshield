@@ -1,0 +1,9 @@
+# ggshield local scan cache (created when running scans in the workspace)
+.cache_ggshield
+
+# Local credential files. This repo ships a secret scanner; do not let its own
+# GitGuardian PAT ride along in a commit.
+.env
+.env.*
+!.env.example
+.claude/worktrees

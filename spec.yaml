@@ -1,0 +1,171 @@
+schemaVersion: "2"
+kind: mixin
+name: gitguardian
+displayName: GitGuardian (ggshield)
+description: Installs the GitGuardian CLI (ggshield) with proxy-injected API-key auth for api.gitguardian.com and wires it in as an AI hook for every coding assistant ggshield supports, so the agent's own actions are scanned for hardcoded secrets automatically - the real key never enters the sandbox.
+
+permissions:
+  network:
+    allow:
+      # Install-time: pinned release tarball download. github.com 302-redirects
+      # to the githubusercontent object stores for release binaries; both are
+      # listed since the redirect target isn't guaranteed to be the same host.
+      - github.com
+      - objects.githubusercontent.com
+      - release-assets.githubusercontent.com
+      # Runtime: ggshield's scan/verify calls hit the GitGuardian public API.
+      # EU workspace / self-hosted instances use a different host - add your
+      # GITGUARDIAN_INSTANCE domain here and to the credential inject block.
+      - api.gitguardian.com
+
+credentials:
+  - service: gitguardian
+    description: GitGuardian API key (from a Personal or Service Account, "scan" scope). Stored on the host; the sandbox only sees a placeholder and the proxy injects the real value on requests to api.gitguardian.com.
+    required: true
+    apiKey:
+      # ggshield reads GITGUARDIAN_API_KEY. On the wire, the proxy rewrites the
+      # Authorization header with the real key on outbound api.gitguardian.com
+      # calls. GitGuardian's API auth scheme is "Authorization: Token <key>",
+      # not Bearer.
+      name: GITGUARDIAN_API_KEY
+      inject:
+        - domain: api.gitguardian.com
+          header: Authorization
+          format: "Token %s"
+
+environment:
+  variables:
+    # gitguardian is a custom (non-registry) service, so sbx does NOT auto-export
+    # the apiKey sentinel into the container - it only sets
+    # SBX_CRED_GITGUARDIAN_MODE. ggshield refuses to run when GITGUARDIAN_API_KEY
+    # is unset, so we materialize the sentinel ourselves. The value is a
+    # placeholder; the proxy swaps in the real key on outbound
+    # api.gitguardian.com requests, so the real token never enters the sandbox.
+    GITGUARDIAN_API_KEY: "proxy-managed"
+
+agentInstructions:
+  content: |
+    ## GitGuardian secret scanning (ggshield)
+
+    `ggshield` is installed and authenticated against `api.gitguardian.com`
+    through the sandbox proxy - `GITGUARDIAN_API_KEY` is a proxy-managed
+    placeholder inside the container, never the real key.
+
+    ### Automatic enforcement (AI hook)
+
+    `ggshield` is installed as an AI hook for every coding assistant it
+    supports - whichever one you are, your hook file is already configured
+    (`~/.claude/settings.json`, `~/.codex/hooks.json`,
+    `~/.copilot/hooks/hooks.json`, `~/.cursor/hooks.json`, ...). Your own
+    actions are therefore scanned for secrets automatically; you do not need to
+    remember to scan manually. If the hook BLOCKS an action, a real secret was
+    detected. Do NOT retry or try to bypass it. Instead: locate the flagged
+    secret, remove it from the code, and tell the user it must be rotated. Only
+    proceed once the secret is gone.
+
+    Run `ggshield machine doctor` to see which assistants the hook is installed
+    for.
+
+    ### Manual scans
+
+    Use these to catch hardcoded secrets on demand:
+
+    - `ggshield secret scan path -r .` - recursively scan the workspace files.
+    - `ggshield secret scan repo .` - scan full git history + working tree
+      (catches secrets that were committed and later removed).
+    - `ggshield api-status` / `ggshield quota` - verify auth and remaining quota.
+
+    Run a scan after generating or editing code that might contain credentials,
+    and before any `git commit`. If a real secret is found, remove it and rotate
+    it - do not commit it. For the EU workspace or a self-hosted instance, the
+    operator must set `GITGUARDIAN_INSTANCE` and add that host to the kit's
+    network allowlist and credential inject block.
+
+setup:
+  install:
+    # Install ggshield from a pinned, digest-verified GitHub release (same
+    # pattern as the trivy/glab kits: no curl|sh, version AND SHA256 pinned in
+    # git). The release ships a self-contained PyInstaller bundle (a binary
+    # plus an _internal/ dir), so we extract the whole tree to /opt and symlink
+    # the launcher onto PATH. To bump: change GGSHIELD_VERSION plus the per-arch
+    # SHA256 below (sha256sum of each release tarball).
+    - command: |
+        set -euo pipefail
+        GGSHIELD_VERSION=1.54.0
+        ARCH=$(dpkg --print-architecture)
+        case "$ARCH" in
+          amd64)
+            SLUG="x86_64-unknown-linux-gnu"
+            SHA256="c91a9d638ba5d73f658985e90887193e77aac7d5dd45a70ef746bc32a96cf95e"
+            ;;
+          arm64)
+            SLUG="aarch64-unknown-linux-gnu"
+            SHA256="71576fba22d00f8558fd7d30d87cb9740047aa77c78cc6770fa8059496458f80"
+            ;;
+          *)
+            echo "unsupported sandbox arch: $ARCH (expected amd64 or arm64)" >&2
+            exit 1
+            ;;
+        esac
+        DIRNAME="ggshield-${GGSHIELD_VERSION}-${SLUG}"
+        TARBALL="${DIRNAME}.tar.gz"
+        URL="https://github.com/GitGuardian/ggshield/releases/download/v${GGSHIELD_VERSION}/${TARBALL}"
+        curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/ggshield.tgz "$URL"
+        echo "${SHA256}  /tmp/ggshield.tgz" | sha256sum -c -
+        rm -rf /opt/ggshield
+        tar -C /opt -xzf /tmp/ggshield.tgz
+        mv "/opt/${DIRNAME}" /opt/ggshield
+        ln -sf /opt/ggshield/ggshield /usr/local/bin/ggshield
+        rm -f /tmp/ggshield.tgz
+        ggshield --version
+      user: "0"
+      description: "Install ggshield v1.54.0, version+digest pinned"
+
+    # Install ggshield as an AI hook for EVERY assistant this ggshield knows
+    # about, so one kit artifact covers every agent sbx can run. Unlike a git
+    # pre-commit hook, the AI hook fires inside the agent's own tool loop and
+    # scans the content the agent produces - putting the secret scan directly on
+    # the agent's authorized output path, which is exactly the surface this
+    # sandbox exists to protect.
+    #
+    # `machine setup` is scopedto the AI hook only: 
+    # --no-git-hooks (the kit deliberately does
+    # not gate git; see history) and --no-honeytokens (the scan-scoped token
+    # can't plant one, and a honeytoken isn't this kit's job). It is idempotent
+    # - re-runs add only what's missing.
+    #
+    # The assistant list is NOT hardcoded: an invalid --agent makes ggshield
+    # print its own choices, which is the only machine-readable list it exposes,
+    # so a ggshield bump that adds an assistant is picked up on the next build.
+    # Passing --agent explicitly also matters because it configures an assistant
+    # that is not present *yet*: bare `machine setup` auto-detects by looking for
+    # ~/.claude, ~/.codex and friends, and at build time the agent has never run,
+    # so a fresh sandbox has none of them - detection would find nothing,
+    # install nothing, and still exit 0, leaving the sandbox silently unhooked.
+    #
+    # Each assistant only reads its own hook file, so the configs written for
+    # the agents this sandbox does not run are inert.
+    #
+    # MUST run as the agent user (uid 1000), NOT root: setup.install defaults to
+    # user "0", which would write the hooks under root's HOME (/root/...) where
+    # the agent (HOME=/home/agent) never reads them. Verified in-sandbox with
+    # `ggshield machine doctor`.
+    #
+    # Keep this POSIX: install commands run under `sh` (dash), not bash, so
+    # bashisms such as ${AGENTS// /} fail the build with "Bad substitution".
+    - command: |
+        set -euo pipefail
+        PROBE="$(ggshield machine setup --agent __list__ 2>&1 || true)"
+        AGENTS="$(printf '%s\n' "$PROBE" | sed -n 's/.*is not one of //p' | tr -d "'." | tr ',' ' ')"
+        if [ -z "$(printf '%s' "$AGENTS" | tr -d '[:space:]')" ]; then
+          echo "could not enumerate ggshield AI assistants; got: $PROBE" >&2
+          exit 1
+        fi
+        SETUP_ARGS=""
+        for a in $AGENTS; do
+          SETUP_ARGS="$SETUP_ARGS --agent $a"
+        done
+        echo "configuring ggshield AI hooks for:$SETUP_ARGS"
+        ggshield machine setup $SETUP_ARGS --no-git-hooks --no-honeytokens
+      user: "1000"
+      description: "Install ggshield as an AI hook for every supported assistant (agent user)"

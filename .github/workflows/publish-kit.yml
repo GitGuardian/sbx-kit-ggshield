@@ -1,0 +1,196 @@
+name: Publish kit
+
+# Publishes the kit OCI artifact to Docker Hub.
+#
+# The kit is a `kind: mixin`, so there is no container image to build: this
+# pushes the kit *artifact* (spec.yaml + files) with `sbx kit push`. One spec,
+# one repo, one tag - the kit is agent-agnostic, so there is nothing to fan out
+# over.
+#
+# Setup required once, in the GitHub repo (Settings -> Secrets and variables ->
+# Actions):
+#   secret   DOCKERHUB_USERNAME   the Docker Hub account used to log in; it must
+#                                 have push rights in the target namespace
+#   secret   DOCKERHUB_TOKEN      a Docker Hub access token with Read & Write
+#   variable DOCKERHUB_NAMESPACE  optional; overrides the default `gitguardian`
+#                                 namespace (e.g. to publish from a fork)
+#
+# See PUBLISHING.md for the full story (why a release build of sbx matters, why
+# consumers pin by digest).
+
+on:
+  workflow_dispatch:
+    inputs:
+      namespace:
+        description: "Docker Hub namespace (default: DOCKERHUB_NAMESPACE variable, else gitguardian)"
+        type: string
+        required: false
+      tag:
+        description: "Tag to publish"
+        type: string
+        default: latest
+      sign:
+        description: "Sign the pushed artifact (keyless, via this workflow's OIDC identity)"
+        type: boolean
+        default: false
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - "spec.yaml"
+      - "scripts/**"
+      - ".github/**"
+
+concurrency:
+  group: publish-kit
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Pin the sbx release used to publish. `sbx kit push` MUST come from a release
+  # build: a dev build writes an empty-descriptor layer that no released sbx can
+  # resolve (PUBLISHING.md#publish-from-a-release-build). Debian packages from
+  # download.docker.com are always release builds; pinning keeps the artifact
+  # reproducible. Bump deliberately, then re-publish and re-pin the digest.
+  SBX_VERSION: "0.39.0"
+  KIT_REPO_NAME: ggshield-kit
+  # Same default as scripts/publish.sh. Override per-repo with the
+  # DOCKERHUB_NAMESPACE variable, or per-run with the `namespace` input.
+  KIT_NAMESPACE_DEFAULT: gitguardian
+
+jobs:
+  validate:
+    name: Validate spec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install sbx
+        uses: ./.github/actions/install-sbx
+        with:
+          version: ${{ env.SBX_VERSION }}
+
+      - name: Validate the kit
+        run: sbx kit validate .
+
+      - name: Show the resolved policy surface
+        # Cheap, and it makes a spec change's blast radius visible in the PR log
+        # (network allow/deny, credentials, env, install commands).
+        run: sbx kit inspect .
+
+  publish:
+    name: Publish to Docker Hub
+    needs: validate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required for keyless signing when the `sign` input is on: sbx exchanges
+      # this workflow's OIDC token for a short-lived Fulcio certificate.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install sbx
+        uses: ./.github/actions/install-sbx
+        with:
+          version: ${{ env.SBX_VERSION }}
+
+      - name: Resolve target namespace
+        id: target
+        env:
+          INPUT_NAMESPACE: ${{ inputs.namespace }}
+          VAR_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+        run: |
+          ns="${INPUT_NAMESPACE:-${VAR_NAMESPACE:-$KIT_NAMESPACE_DEFAULT}}"
+          if [ -z "$ns" ]; then
+            echo "::error::No namespace resolved." >&2
+            exit 1
+          fi
+          echo "namespace=$ns" >>"$GITHUB_OUTPUT"
+          echo "Publishing to docker.io/$ns/$KIT_REPO_NAME"
+
+      - name: Log in to Docker Hub
+        # `sbx kit push` and `docker buildx imagetools inspect` both read
+        # ~/.docker/config.json, which this writes. No `sbx login` needed.
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push the kit artifact
+        id: push
+        env:
+          SBX_KIT_SIGN: ${{ inputs.sign && '1' || '0' }}
+        run: |
+          ./scripts/publish.sh \
+            "${{ steps.target.outputs.namespace }}" \
+            "${{ inputs.tag || 'latest' }}" | tee publish.log
+
+      - name: Check the repo is public
+        # Docker Hub creates a new repo with the namespace's default privacy,
+        # which may be Private. An unauthenticated read only succeeds if public.
+        env:
+          NAMESPACE: ${{ steps.target.outputs.namespace }}
+        run: |
+          url="https://hub.docker.com/v2/repositories/${NAMESPACE}/${KIT_REPO_NAME}/"
+          code="$(curl -s -o /dev/null -w '%{http_code}' "$url")"
+          if [ "$code" != "200" ]; then
+            echo "::error::${NAMESPACE}/${KIT_REPO_NAME} is not publicly readable (HTTP $code). Make the repository Public in Docker Hub, and set the namespace's default repository privacy to Public so future pushes stay public." >&2
+            exit 1
+          fi
+          echo "docker.io/${NAMESPACE}/${KIT_REPO_NAME} is public."
+
+      - name: Summarise the published digest
+        if: steps.push.outcome == 'success'
+        env:
+          NAMESPACE: ${{ steps.target.outputs.namespace }}
+        run: |
+          digest="$(grep -oE 'sha256:[0-9a-f]{64}' publish.log | tail -1)"
+          {
+            echo "## Published kit artifact"
+            echo
+            echo '```'
+            echo "sbx run claude --kit \"oci://docker.io/${NAMESPACE}/${KIT_REPO_NAME}@${digest}\" ."
+            echo '```'
+            echo
+            echo "Consumers must pin by digest — sbx rejects OCI tags at consume time."
+            echo "Paste \`${digest}\` into the digest tables in \`README.md\`,"
+            echo "\`PUBLISHING.md\` and \`docs/dockerhub-overview.md\`."
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  description:
+    name: Sync Docker Hub overview
+    needs: publish
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Push docs/dockerhub-overview.md as the repo overview
+        env:
+          NAMESPACE: ${{ inputs.namespace || vars.DOCKERHUB_NAMESPACE || 'gitguardian' }}
+          USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          token="$(jq -n --arg u "$USERNAME" --arg p "$TOKEN" '{identifier:$u,secret:$p}' \
+            | curl -sf -H 'Content-Type: application/json' -d @- \
+                https://hub.docker.com/v2/auth/token \
+            | jq -r .access_token)"
+          if [ -z "$token" ] || [ "$token" = "null" ]; then
+            echo "::error::Could not obtain a Docker Hub API token." >&2
+            exit 1
+          fi
+          jq -n \
+            --rawfile body docs/dockerhub-overview.md \
+            --arg short "GitGuardian (ggshield) secret scanning as a Docker Sandboxes kit" \
+            '{full_description:$body, description:$short}' \
+          | curl -sf -X PATCH \
+              -H "Authorization: Bearer $token" \
+              -H 'Content-Type: application/json' \
+              -d @- \
+              "https://hub.docker.com/v2/repositories/${NAMESPACE}/${KIT_REPO_NAME}/" >/dev/null
+          echo "Overview synced to docker.io/${NAMESPACE}/${KIT_REPO_NAME}"

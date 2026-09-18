@@ -1,0 +1,48 @@
+name: Install sbx
+description: >-
+  Install a pinned RELEASE build of the Docker Sandboxes CLI (sbx) from
+  download.docker.com, and assert it is not a development build.
+
+inputs:
+  version:
+    description: "Upstream sbx version to install, e.g. 0.39.0"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        SBX_WANT: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+
+        # Docker's apt repo is the only distribution channel for sbx, and it
+        # only ships release builds — which is what `sbx kit push` requires.
+        sudo install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+          | sudo gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg
+        sudo chmod a+r /etc/apt/keyrings/docker.gpg
+        codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${codename} stable" \
+          | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+        sudo apt-get update -qq
+
+        # Resolve the distro-specific package revision for the pinned upstream
+        # version (e.g. 0.39.0 -> 0.39.0-1~ubuntu.24.04~noble).
+        pkg="$(apt-cache madison docker-sbx | awk -v v="$SBX_WANT" '$3 ~ "^"v"-" { print $3; exit }')"
+        if [ -z "$pkg" ]; then
+          echo "::error::docker-sbx ${SBX_WANT} is not available for ${codename}. Available:" >&2
+          apt-cache madison docker-sbx | awk '{print "  " $3}' >&2
+          exit 1
+        fi
+        sudo apt-get install -y --no-install-recommends "docker-sbx=${pkg}"
+
+        # A `-<n>-g<sha>` suffix means a development build, which silently
+        # pushes an artifact no released sbx client can resolve.
+        version_line="$(sbx version)"
+        echo "$version_line"
+        if grep -qE 'v?[0-9]+\.[0-9]+\.[0-9]+[^ ]*-[0-9]+-g[0-9a-f]{7,}' <<<"$version_line"; then
+          echo "::error::sbx looks like a development build; refusing to publish. See PUBLISHING.md." >&2
+          exit 1
+        fi
