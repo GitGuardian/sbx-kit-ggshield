@@ -89,18 +89,22 @@ setup:
     # plus an _internal/ dir), so we extract the whole tree to /opt and symlink
     # the launcher onto PATH. To bump: change GGSHIELD_VERSION plus the per-arch
     # SHA256 below (sha256sum of each release tarball).
+    #
+    # Held at 1.53.0: 1.54.0 ships a broken certificate bundle, reported to the
+    # ggshield team. Do not bump past 1.53.0 until that lands, and note 1.53.0
+    # has no AI hook for Mistral Vibe - that assistant arrived in 1.54.0.
     - command: |
         set -euo pipefail
-        GGSHIELD_VERSION=1.54.0
+        GGSHIELD_VERSION=1.53.0
         ARCH=$(dpkg --print-architecture)
         case "$ARCH" in
           amd64)
             SLUG="x86_64-unknown-linux-gnu"
-            SHA256="c91a9d638ba5d73f658985e90887193e77aac7d5dd45a70ef746bc32a96cf95e"
+            SHA256="234d1a62ea7b769695c7e5aee8f29e9d0069cd09b4e5b67493d3b529abb44e4a"
             ;;
           arm64)
             SLUG="aarch64-unknown-linux-gnu"
-            SHA256="71576fba22d00f8558fd7d30d87cb9740047aa77c78cc6770fa8059496458f80"
+            SHA256="097616513fe7a4f25831a464b8968b124af32d274e2ce006e388800605696b20"
             ;;
           *)
             echo "unsupported sandbox arch: $ARCH (expected amd64 or arm64)" >&2
@@ -119,7 +123,7 @@ setup:
         rm -f /tmp/ggshield.tgz
         ggshield --version
       user: "0"
-      description: "Install ggshield v1.54.0, version+digest pinned"
+      description: "Install ggshield v1.53.0, version+digest pinned"
 
     # Install ggshield as an AI hook for EVERY assistant this ggshield knows
     # about, so one kit artifact covers every agent sbx can run. Unlike a git

@@ -19,7 +19,7 @@ outbound calls to `api.gitguardian.com` - the container sees a placeholder.
 
 The kit doesn't just *offer* scanning - it **enforces** it. At sandbox creation
 `ggshield` is installed as an **AI hook** for every coding assistant it supports
-(Claude Code, Codex, Copilot, Cursor, VS Code and Mistral Vibe), so whichever
+(Claude Code, Codex, Copilot, Cursor and VS Code), so whichever
 agent the sandbox runs, its own actions are scanned for secrets automatically.
 That turns secret scanning from advice the agent might skip into a deterministic
 gate sitting directly on the agent's authorized output path (see
@@ -179,7 +179,7 @@ into domains the kit declares.
 
 ## Version pinning
 
-The install command pins `GGSHIELD_VERSION=1.54.0` and a per-arch `SHA256`
+The install command pins `GGSHIELD_VERSION=1.53.0` and a per-arch `SHA256`
 (`x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`). To bump: edit
 `spec.yaml`, update the version string and both SHA256s (the `sha256sum` of
 each release tarball from the
