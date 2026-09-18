@@ -14,9 +14,13 @@
 #   ./scripts/publish.sh <namespace>        # push under <namespace>
 #   ./scripts/publish.sh <namespace> <tag>  # push under a tag other than :latest
 #
-# Requires: `sbx` (a RELEASE build) on PATH and `docker login` already done
-# (sbx kit push uses the Docker credential store). The kit is a kind: mixin, so
-# this pushes the OCI *artifact* (spec.yaml + files) - no container image.
+# Requires: `sbx` (a RELEASE build) on PATH, and BOTH `docker login` and
+# `sbx login`. The push itself falls back to the Docker credential store, but
+# sbx then reads the manifest back to attach the SLSA provenance referrer (and
+# the Sigstore bundle under --sign) over its own Docker Hub session; without
+# `sbx login` that step fails with "user is not authenticated to Docker: no
+# default account profile set". The kit is a kind: mixin, so this pushes the
+# OCI *artifact* (spec.yaml + files) - no container image.
 set -euo pipefail
 
 NAMESPACE="${1:-gitguardian}"
