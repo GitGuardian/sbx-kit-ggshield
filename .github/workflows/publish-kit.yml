@@ -123,12 +123,25 @@ jobs:
           echo "Publishing to docker.io/$ns/$KIT_REPO_NAME"
 
       - name: Log in to Docker Hub
-        # `sbx kit push` and `docker buildx imagetools inspect` both read
-        # ~/.docker/config.json, which this writes. No `sbx login` needed.
+        # Writes ~/.docker/config.json, which `docker buildx imagetools inspect`
+        # reads and which `sbx kit push` falls back to for the push itself.
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Sign in to Docker with sbx
+        # That credential-store fallback only covers the push. Everything sbx
+        # does afterwards - reading the manifest back to attach the SLSA
+        # provenance referrer, and the Sigstore bundle under --sign - goes
+        # through sbx's own Docker Hub session, which only `sbx login` creates.
+        # Without it the push lands and then sbx aborts with "user is not
+        # authenticated to Docker: no default account profile set".
+        env:
+          USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          printf '%s' "$TOKEN" | sbx login --username "$USERNAME" --password-stdin
 
       - name: Push the kit artifact
         id: push
