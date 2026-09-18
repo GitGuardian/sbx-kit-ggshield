@@ -38,8 +38,8 @@ pointing at the digest to copy.
 | copilot | `~/.copilot/hooks/hooks.json` |
 | cursor  | `~/.cursor/hooks.json`        |
 
-The pinned `ggshield` (1.54.0) supports AI hooks for `claude-code`, `codex`,
-`copilot`, `cursor`, `vscode` and `vibe`. Other sbx agents (`gemini`,
+The pinned `ggshield` (1.53.0) supports AI hooks for `claude-code`, `codex`,
+`copilot`, `cursor` and `vscode`. Other sbx agents (`gemini`,
 `droid`, `kiro`, `opencode`) have no ggshield AI hook — layer the kit onto them
 for the `ggshield` CLI + manual scanning, but there is no automatic enforcement
 hook.
