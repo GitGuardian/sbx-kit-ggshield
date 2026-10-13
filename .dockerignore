@@ -1,0 +1,8 @@
+# The v3 build context is this repository's root. The recipe COPYs nothing
+# from it; the kit frontend reads only gitguardian.yaml, gitguardian.dockerfile
+# and the agent-context body. Allow exactly those, so nothing else - least of
+# all the local .env holding a GitGuardian PAT - is ever sent to BuildKit.
+*
+!gitguardian.yaml
+!gitguardian.dockerfile
+!gitguardian-context.md

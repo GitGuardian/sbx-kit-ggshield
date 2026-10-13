@@ -1,56 +1,38 @@
 #!/usr/bin/env bash
-# Publish the gitguardian kit artifact to Docker Hub.
+# Publish the gitguardian kit to Docker Hub.
 #
-# ONE repo, ONE tag:
-#   docker.io/<ns>/ggshield-kit:latest
+# ONE repo, ONE advertised tag:
+#   docker.io/<ns>/ggshield-kit:latest   (plus :<ggshield version>)
 #
-# The kit is agent-agnostic - its install step wires the ggshield AI hook for
-# every assistant ggshield supports - so there is nothing to fan out over. The
-# tag is only a human-facing label: consumers pin by DIGEST (sbx rejects OCI
-# tags at consume time).
+# The kit is agent-agnostic - its install hook wires the ggshield AI hook for
+# every assistant ggshield supports - so there is nothing to fan out over.
 #
 # Usage:
 #   ./scripts/publish.sh                    # push to docker.io/gitguardian/ggshield-kit:latest
 #   ./scripts/publish.sh <namespace>        # push under <namespace>
 #   ./scripts/publish.sh <namespace> <tag>  # push under a tag other than :latest
 #
-# Requires: `sbx` (a RELEASE build) on PATH, and BOTH `docker login` and
-# `sbx login`. The push itself falls back to the Docker credential store, but
-# sbx then reads the manifest back to attach the SLSA provenance referrer (and
-# the Sigstore bundle under --sign) over its own Docker Hub session; without
-# `sbx login` that step fails with "user is not authenticated to Docker: no
-# default account profile set". The kit is a kind: mixin, so this pushes the
-# OCI *artifact* (spec.yaml + files) - no container image.
+# Requires: `docker login` and a `docker buildx` builder able to build
+# linux/amd64 and linux/arm64. A v3 kit is a plain OCI image built from
+# gitguardian.yaml; no sbx is needed to publish. KIT_REGISTRY overrides
+# docker.io (e.g. a local test registry).
 set -euo pipefail
 
 NAMESPACE="${1:-gitguardian}"
 TAG="${2:-latest}"
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-KIT_LAYER_MEDIA_TYPE="application/vnd.oci.image.layer.v1.tar+gzip"
-REPO="docker.io/${NAMESPACE}/ggshield-kit"
+REPO="${KIT_REGISTRY:-docker.io}/${NAMESPACE}/ggshield-kit"
 REF="${REPO}:${TAG}"
+VERSION="$(sed -n '/^args:/,/^[a-z]/s/^    default: "\(.*\)"$/\1/p' "${KIT_DIR}/gitguardian.yaml" | head -1)"
 
-# SBX_KIT_SIGN=1 attaches a keyless Sigstore signature to the push. Keyless
-# signing needs an OIDC identity: in CI sbx picks up the ambient provider (for
-# GitHub Actions the job needs `permissions: id-token: write`); locally it opens
-# a browser. Off by default - what this repo publishes has always been unsigned.
-PUSH_FLAGS=()
-[ "${SBX_KIT_SIGN:-0}" = "1" ] && PUSH_FLAGS+=(--sign)
-
-echo ">> validating ${KIT_DIR}"
-sbx kit validate "${KIT_DIR}"
-
-echo ">> pushing ${REF}"
-sbx kit push "${KIT_DIR}" "${REF}" ${PUSH_FLAGS[@]+"${PUSH_FLAGS[@]}"}
+echo ">> building and pushing ${REF} (ggshield ${VERSION})"
+docker buildx build "${KIT_DIR}" -f "${KIT_DIR}/gitguardian.yaml" \
+  --platform linux/amd64,linux/arm64 --provenance=true \
+  -t "${REF}" -t "${REPO}:${VERSION}" --push
 
 echo ">> verifying pushed artifact"
-manifest="$(docker buildx imagetools inspect --raw "${REF}")"
-if ! grep -qF "${KIT_LAYER_MEDIA_TYPE}" <<<"${manifest}"; then
-  echo >&2
-  echo "ERROR: ${REF} has no ${KIT_LAYER_MEDIA_TYPE} layer." >&2
-  echo "       Released sbx clients cannot resolve this artifact." >&2
-  echo "       'sbx version' is probably a dev build; re-push from a release" >&2
-  echo "       build. See PUBLISHING.md." >&2
+if ! docker buildx imagetools inspect --raw "${REF}" | grep -q '"vnd.docker.sandbox.kit.schema-version": *"3"'; then
+  echo "ERROR: ${REF} carries no v3 kit descriptor." >&2
   exit 1
 fi
 
@@ -59,10 +41,10 @@ DIGEST="$(docker buildx imagetools inspect "${REF}" | awk '/^Digest:/ { print $2
 echo
 echo "==================================================================="
 echo ">> Published ${REF}"
-echo ">> Digest (pin this in README.md / PUBLISHING.md / the Docker Hub overview):"
+echo ">> Digest:"
 echo
 echo "   ${DIGEST}"
 echo
 echo ">> Consume it with any agent, e.g.:"
-echo "   sbx run claude --kit \"oci://${REPO}@${DIGEST}\" ."
-echo "   sbx run codex  --kit \"oci://${REPO}@${DIGEST}\" ."
+echo "   sbx run claude --kit \"oci://${REF}\" ."
+echo "   sbx run codex  --kit \"oci://${REF}\" ."

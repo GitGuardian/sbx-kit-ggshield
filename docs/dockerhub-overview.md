@@ -7,7 +7,7 @@ coding-agent sandbox, and wires it in as the agent's own **AI hook** so the
 agent's actions are scanned for hardcoded secrets automatically.
 
 > **Source, issues, and full docs:**
-> https://github.com/GitGuardian/sbx-kits-gitguardian
+> https://github.com/GitGuardian/sbx-kit-ggshield
 
 ## Key isolation property
 
@@ -17,19 +17,18 @@ the `Authorization: Token …` header with the real key (sourced from the host) 
 the wire. **The real key never enters the sandbox** — not in the environment,
 shell history, or `ps` output.
 
-Egress is proxy-mediated too, but the kit's four allowed hosts are *added to*
-the host's `sbx policy` — they do not narrow it. Use
+Egress is proxy-mediated too, but the kit's one allowed host is *added to*
+the host's `sbx policy` — it does not narrow it. Use
 `sbx policy init deny-all` if you want the kit's entries to be the entire
 allowlist.
 
 ## One repo, one tag
 
 `ggshield`'s AI hook is agent-specific (each assistant reads a different hook
-file), but this repo ships **one artifact under `:latest` that covers them all**:
+file), but this repo ships **one kit under `:latest` that covers them all**:
 the kit configures the hook for every assistant `ggshield` supports, and each
-assistant reads only its own file, so the rest are inert. Consumers **pin by
-digest** (sbx rejects OCI tags at consume time) — the tag is just a label
-pointing at the digest to copy.
+assistant reads only its own file, so the rest are inert. `:latest` is the
+latest kit deployed for sbx.
 
 | Agent   | Hook file the kit writes      |
 |---------|-------------------------------|
@@ -46,14 +45,11 @@ hook.
 
 ## Usage
 
-Pin by digest (get the current digest from the
-[repo Tags](https://hub.docker.com/r/gitguardian/ggshield-kit/tags) or the
-[GitHub README](https://github.com/GitGuardian/sbx-kits-gitguardian#usage)) — the
-same digest works for every agent:
+The same kit works for every agent:
 
 ```console
-sbx run claude --kit "oci://docker.io/gitguardian/ggshield-kit@sha256:<digest>" .
-sbx run codex  --kit "oci://docker.io/gitguardian/ggshield-kit@sha256:<digest>" .
+sbx run claude --kit "oci://docker.io/gitguardian/ggshield-kit:latest" .
+sbx run codex  --kit "oci://docker.io/gitguardian/ggshield-kit:latest" .
 ```
 
 Requires a GitGuardian API key (Personal or Service Account, `scan` scope) bound
@@ -62,7 +58,7 @@ proxy-managed placeholder.
 
 ## What it installs
 
-- `ggshield` from a pinned, digest-verified GitHub release.
+- `ggshield` from a pinned, digest-verified GitHub release, baked into the kit image.
 - The AI hook for every supported assistant via `ggshield machine setup
   --agent <each one> --no-git-hooks --no-honeytokens`, run as the agent user,
   registering `PreToolUse` / `PostToolUse` / `UserPromptSubmit` handlers that
@@ -75,4 +71,4 @@ retry or bypass. Manual scans (`ggshield secret scan path -r .`,
 ---
 
 Licensed under the terms in the
-[GitHub repository](https://github.com/GitGuardian/sbx-kits-gitguardian).
+[GitHub repository](https://github.com/GitGuardian/sbx-kit-ggshield).

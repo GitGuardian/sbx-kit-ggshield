@@ -34,7 +34,7 @@ placeholder value for `GITGUARDIAN_API_KEY`. When it calls the GitGuardian API,
 the sbx proxy rewrites the `Authorization: Token …` header with the real key
 (sourced from the host) on the wire.
 
-Egress is also proxy-mediated, but note that the kit's four hosts are **added
+Egress is also proxy-mediated, but note that the kit's host is **added
 to** the host's network policy, not a replacement for it - see
 [How auth and egress work](#how-auth-and-egress-work).
 
@@ -57,7 +57,7 @@ It will automatically add ggshield ai hooks to the agent, protecting your prompt
    > token scoped to `scan` only. The kit isolates the key from the sandbox; a
    > least-privilege scope isolates the *damage* if the key leaks host-side.
 2. **Store the value** with `sbx secret set`. The service name must be
-   `gitguardian`, matching the credential's `service` in `spec.yaml`:
+   `gitguardian`, matching the credential's `service` in `gitguardian.yaml`:
 
    ```console
    # Global - paste the PAT at the interactive prompt:
@@ -94,7 +94,7 @@ sbx run claude --kit ./ .
 sbx run codex  --kit ./ .
 ```
 
-One `spec.yaml` covers every agent; see [Publishing](PUBLISHING.md) for the
+One kit covers every agent; see [Publishing](PUBLISHING.md) for the
 current digest.
 
 Note that inside the sandbox, you can run ggshield manually:
@@ -121,18 +121,13 @@ doctor`. In a correctly provisioned sandbox it reports:
 
 ## Credentials
 
-The kit declares one credential, `gitguardian`, and marks it `required`. Note
-that `required` is advisory in `sbx` v0.39: with no binding it prints
-`WARN: required credential has no binding; sandbox will start without it` and
-starts anyway - `ggshield` then runs with the `proxy-managed` placeholder and
-every API call fails as unauthenticated. Bind the credential before you rely on
-the kit.
+The kit declares one required credential, `gitguardian`: sbx refuses to create
+the sandbox until it is bound.
 
 
 
 Inside the container `GITGUARDIAN_API_KEY` is set to the placeholder
-`proxy-managed` (the kit exports it via `environment.variables`, because
-`gitguardian` is a custom service that sbx does not auto-materialize). The proxy
+placeholder (the credential is declared `proxyManaged`). The proxy
 rewrites the `Authorization: Token <key>` header with the real value only on
 requests to `api.gitguardian.com`, so the real token never enters the sandbox.
 
@@ -140,16 +135,10 @@ requests to `api.gitguardian.com`, so the real token never enters the sandbox.
 
 GitGuardian's API authentication scheme is `Authorization: Token <api_key>`, so the kit injects with `format: "Token %s"`.
 
-The kit declares four hosts:
+The kit declares one host, `api.gitguardian.com`, for runtime scan/verify API
+calls. ggshield is downloaded when the kit image is built, not in the sandbox.
 
-| Host | Why |
-| --- | --- |
-| `github.com` | Release page entry point for the install tarball (302-redirects) |
-| `objects.githubusercontent.com` | Redirect target for the release asset |
-| `release-assets.githubusercontent.com` | Alternate redirect target for release assets |
-| `api.gitguardian.com` | Runtime scan/verify API calls |
-
-**These four are additive to the host's network policy, not a restriction on
+**This host is additive to the host's network policy, not a restriction on
 it.** A kit's `permissions.network.allow` can only widen egress; what the
 sandbox can actually reach is the union of the kit's entries and the policy set
 by `sbx policy init`. Measured in a live sandbox created after
@@ -166,22 +155,23 @@ NETWORK
 many more all returned `200`, while `example.com` and `wikipedia.org` returned
 `403` from the proxy. If you want egress genuinely limited to what this kit
 needs, initialize the host policy with `sbx policy init deny-all` (or a
-restrictive governance profile) so the kit's four entries are the whole
+restrictive governance profile) so the kit's entry is the whole
 allowlist, and narrow a single sandbox further with `sbx run --deny-network`.
 
 ### EU workspace / self-hosted instances
 
 `ggshield` defaults to `api.gitguardian.com`. For the EU workspace or a
 self-hosted GitGuardian, set `GITGUARDIAN_INSTANCE` for the agent and add that
-host to **both** `permissions.network.allow` and the credential's
-`apiKey.inject[].domain` in `spec.yaml` (fork the kit) - the proxy only injects
+host to **both** the network policy's `runtime.allow` and the credential's
+`apiKey.inject[].domain` in `gitguardian.yaml` (fork the kit) - the proxy only injects
 into domains the kit declares.
 
 ## Version pinning
 
-The install command pins `GGSHIELD_VERSION=1.53.0` and a per-arch `SHA256`
-(`x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`). To bump: edit
-`spec.yaml`, update the version string and both SHA256s (the `sha256sum` of
+`gitguardian.dockerfile` pins ggshield `1.53.0` and a per-arch `SHA256`
+(`x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`). To bump: add the
+new version's two SHA256s to `gitguardian.dockerfile` and change the `version`
+arg default in `gitguardian.yaml` (the `sha256sum` of
 each release tarball from the
 [releases page](https://github.com/GitGuardian/ggshield/releases)).
 

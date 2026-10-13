@@ -1,0 +1,112 @@
+# syntax=docker/sandbox-kit:3
+# GitGuardian (ggshield) mixin. Recipe: gitguardian.dockerfile; agent
+# instructions: gitguardian-context.md.
+schemaVersion: "3"
+kind: mixin
+displayName: GitGuardian (ggshield)
+author: "GitGuardian"
+description: Installs the GitGuardian CLI (ggshield) with proxy-injected API-key auth for api.gitguardian.com and wires it in as an AI hook for every coding assistant ggshield supports, so the agent's own actions are scanned for hardcoded secrets automatically - the real key never enters the sandbox.
+sourceUrl: https://github.com/GitGuardian/sbx-kit-ggshield
+licenses: [MIT]
+
+args:
+  version:
+    default: "1.53.0"
+    pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+    description: ggshield release to install (must have per-arch digests pinned in gitguardian.dockerfile)
+    buildArg: GGSHIELD_VERSION
+
+version: "${{ kit.args.version }}"
+provides: ["ggshield@${{ kit.args.version }}"]
+
+# Run after these agents' kits: they rewrite their config files at create
+# (claude's ~/.claude/settings.json), which would wipe ggshield's hooks if
+# ggshield's install hook ran first.
+integrates: ["claude", "codex", "copilot", "cursor"]
+
+capabilities:
+  - type: com.docker.sandbox/network-policy@1
+    config:
+      # MIGRATION NOTE: the v2 install-time GitHub hosts are gone; ggshield is
+      # downloaded when the kit image is built.
+      runtime:
+        allow:
+          # Runtime: ggshield's scan/verify calls hit the GitGuardian public API.
+          # EU workspace / self-hosted instances use a different host - add your
+          # GITGUARDIAN_INSTANCE domain here and to the credential inject block.
+          - api.gitguardian.com
+
+  - type: com.docker.sandbox/credential@1
+    description: GitGuardian API key (from a Personal or Service Account, "scan" scope). Stored on the host; the sandbox only sees a placeholder and the proxy injects the real value on requests to api.gitguardian.com.
+    config:
+      service: gitguardian
+      phase: runtime
+      apiKey:
+        # ggshield reads GITGUARDIAN_API_KEY. On the wire, the proxy rewrites the
+        # Authorization header with the real key on outbound api.gitguardian.com
+        # calls. GitGuardian's API auth scheme is "Authorization: Token <key>",
+        # not Bearer.
+        name: GITGUARDIAN_API_KEY
+        # MIGRATION NOTE: replaces v2's `environment.variables` placeholder; the
+        # runtime now sets the sentinel itself.
+        proxyManaged: true
+        inject:
+          - domain: api.gitguardian.com
+            header: Authorization
+            format: "Token %s"
+
+  - type: com.docker.sandbox/lifecycle@1
+    config:
+      install:
+        # Install ggshield as an AI hook for EVERY assistant this ggshield knows
+        # about, so one kit artifact covers every agent sbx can run. Unlike a git
+        # pre-commit hook, the AI hook fires inside the agent's own tool loop and
+        # scans the content the agent produces - putting the secret scan directly
+        # on the agent's authorized output path, which is exactly the surface this
+        # sandbox exists to protect.
+        #
+        # `machine setup` is scoped to the AI hook only:
+        # --no-git-hooks (the kit deliberately does
+        # not gate git; see history) and --no-honeytokens (the scan-scoped token
+        # can't plant one, and a honeytoken isn't this kit's job). It is idempotent
+        # - re-runs add only what's missing.
+        #
+        # The assistant list is NOT hardcoded: an invalid --agent makes ggshield
+        # print its own choices, which is the only machine-readable list it exposes,
+        # so a ggshield bump that adds an assistant is picked up on the next build.
+        # Passing --agent explicitly also matters because it configures an assistant
+        # that is not present *yet*: bare `machine setup` auto-detects by looking for
+        # ~/.claude, ~/.codex and friends, and at build time the agent has never run,
+        # so a fresh sandbox has none of them - detection would find nothing,
+        # install nothing, and still exit 0, leaving the sandbox silently unhooked.
+        #
+        # Each assistant only reads its own hook file, so the configs written for
+        # the agents this sandbox does not run are inert.
+        #
+        # MUST run as the agent user (uid 1000), NOT root: install hooks default to
+        # root, which would write the hooks under root's HOME (/root/...) where the
+        # agent (HOME=/home/agent) never reads them. Verified in-sandbox with
+        # `ggshield machine doctor`.
+        #
+        # Keep this POSIX: install commands run under `sh` (dash), not bash, so
+        # bashisms such as ${AGENTS// /} fail the build with "Bad substitution".
+        - command: |
+            set -euo pipefail
+            PROBE="$(ggshield machine setup --agent __list__ 2>&1 || true)"
+            AGENTS="$(printf '%s\n' "$PROBE" | sed -n 's/.*is not one of //p' | tr -d "'." | tr ',' ' ')"
+            if [ -z "$(printf '%s' "$AGENTS" | tr -d '[:space:]')" ]; then
+              echo "could not enumerate ggshield AI assistants; got: $PROBE" >&2
+              exit 1
+            fi
+            SETUP_ARGS=""
+            for a in $AGENTS; do
+              SETUP_ARGS="$SETUP_ARGS --agent $a"
+            done
+            echo "configuring ggshield AI hooks for:$SETUP_ARGS"
+            ggshield machine setup $SETUP_ARGS --no-git-hooks --no-honeytokens
+          user: "1000"
+          description: "Install ggshield as an AI hook for every supported assistant (agent user)"
+
+  - type: com.docker.sandbox/agent-context@1
+    config:
+      contentFile: ./gitguardian-context.md
